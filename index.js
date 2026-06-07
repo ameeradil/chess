@@ -8,6 +8,7 @@ let board = []
 let imgToPos = new Map()
 let currentTurn = 'white'
 let selected = null
+let gameOver = false
 
 function parsePiece(img) {
   if (!img) return null
@@ -198,6 +199,12 @@ function movePiece(fromR, fromC, toR, toC) {
   const targetCell = board[toR][toC]
   const toIdx = toR * BOARD_SIZE + toC
   const toSq = squareNodes[toIdx]
+  // remove captured piece DOM and mapping
+  if (targetCell && targetCell.dom) {
+    try { targetCell.dom.remove() } catch (e) {}
+    imgToPos.delete(targetCell.dom)
+  }
+  // move DOM and update model
   toSq.appendChild(piece.dom)
   board[toR][toC] = { type: piece.type, color: piece.color, dom: piece.dom }
   board[fromR][fromC] = null
@@ -206,6 +213,7 @@ function movePiece(fromR, fromC, toR, toC) {
 
 function onPieceClick(e) {
   e.stopPropagation()
+  if (gameOver) return
   const img = e.currentTarget
   const pos = imgToPos.get(img)
   if (!pos) return
@@ -219,6 +227,8 @@ function onPieceClick(e) {
       selected = null
       clearHighlights()
       currentTurn = currentTurn === 'white' ? 'black' : 'white'
+      updateBoardOrientation()
+      evaluateGameState()
       return
     }
   }
@@ -234,6 +244,7 @@ function onSquareClick(e) {
   const idx = squareNodes.indexOf(sq)
   if (idx === -1) return
   const r = Math.floor(idx / BOARD_SIZE), c = idx % BOARD_SIZE
+  if (gameOver) return
   if (!selected) return
   const legal = generateLegalMoves(selected.r, selected.c)
   if (legal.some(([rr,cc]) => rr===r && cc===c)) {
@@ -241,7 +252,80 @@ function onSquareClick(e) {
     selected = null
     clearHighlights()
     currentTurn = currentTurn === 'white' ? 'black' : 'white'
+    updateBoardOrientation()
+    evaluateGameState()
   }
+}
+
+function isInCheck(color) {
+  const kingPos = findKing(board, color) || findKing(board, color)
+  if (!kingPos) return false
+  const [kr,kc] = kingPos
+  return isSquareAttacked(board, kr, kc, color === 'white' ? 'black' : 'white')
+}
+
+function getAllLegalMovesForColor(color) {
+  const moves = []
+  for (let r = 0; r < BOARD_SIZE; r++) for (let c = 0; c < BOARD_SIZE; c++) {
+    const p = board[r][c]
+    if (p && p.color === color) {
+      const leg = generateLegalMoves(r,c)
+      for (let [tr,tc] of leg) moves.push({ from: [r,c], to: [tr,tc] })
+    }
+  }
+  return moves
+}
+
+function evaluateGameState() {
+  const opponent = currentTurn
+  const inCheck = isInCheck(opponent)
+  const legal = getAllLegalMovesForColor(opponent)
+  // highlight king if in check
+  clearHighlights()
+  if (inCheck) {
+    const kp = findKing(board, opponent)
+    if (kp) {
+      const [kr,kc] = kp
+      const idx = kr * BOARD_SIZE + kc
+      const sq = squareNodes[idx]
+      if (sq) sq.style.outline = '3px solid red'
+    }
+  }
+  // Check for checkmate / stalemate. Only end the game when the side to move
+  // has no legal moves. If they're also in check -> checkmate, otherwise stalemate.
+  if (legal.length === 0) {
+    if (inCheck) {
+      const winner = opponent === 'white' ? 'Black' : 'White'
+      gameOver = true
+      showGameOver(winner)
+      // dispatch a custom event so external clients can listen
+      window.dispatchEvent(new CustomEvent('gameOver', { detail: { winner } }))
+      return
+    } else {
+      // Stalemate: end the game silently (no alert), as requested
+      gameOver = true
+      return
+    }
+  }
+}
+
+function showGameOver(winner) {
+  const overlay = document.getElementById('gameOverlay')
+  const msg = document.getElementById('gameOverlayMessage')
+  const playBtn = document.getElementById('playAgainBtn')
+  const closeBtn = document.getElementById('closeOverlayBtn')
+  if (!overlay || !msg) return
+  msg.textContent = winner + ' wins!'
+  overlay.style.display = 'flex'
+  function cleanup() {
+    overlay.style.display = 'none'
+    playBtn.removeEventListener('click', onPlay)
+    closeBtn.removeEventListener('click', onClose)
+  }
+  function onPlay() { cleanup(); location.reload() }
+  function onClose() { cleanup() }
+  playBtn.addEventListener('click', onPlay)
+  closeBtn.addEventListener('click', onClose)
 }
 
 function attachHandlers() {
@@ -251,3 +335,17 @@ function attachHandlers() {
 
 initBoard()
 attachHandlers()
+
+// Board flip handling (automatic orientation only)
+const boardContainer = document.querySelector('.main-container')
+let boardFlipped = false
+
+// Automatically orient the board so the player to move sees the board
+function updateBoardOrientation() {
+  const shouldFlip = (currentTurn === 'black')
+  boardFlipped = shouldFlip
+  boardContainer.classList.toggle('flipped', shouldFlip)
+}
+
+// initial orientation
+updateBoardOrientation()
